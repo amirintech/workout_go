@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 )
 
 type Workout struct {
@@ -27,6 +28,8 @@ type WorkoutEntry struct {
 type WorkoutStore interface {
 	Create(workout *Workout) (*Workout, error)
 	GetByID(id int) (*Workout, error)
+	Update(workout *Workout) error
+	Delete(id int) error
 }
 
 type PostgresWorkoutStore struct {
@@ -104,6 +107,7 @@ func (pws *PostgresWorkoutStore) GetByID(id int) (*Workout, error) {
 		&workout.DurationMinutes,
 		&workout.CaloriesBurned,
 	)
+
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +122,7 @@ func (pws *PostgresWorkoutStore) GetByID(id int) (*Workout, error) {
 
 func (pws *PostgresWorkoutStore) getEntriesForWorkout(id int) ([]WorkoutEntry, error) {
 	query := `
-	SELECT id, excercise_name, sets, reps, duration_seconds, weight, notes, order_index
+	SELECT id, exercise_name, sets, reps, duration_seconds, weight, notes, order_index
 	FROM workout_entries
 	WHERE workout_id = $1
 	ORDER BY order_index;
@@ -132,11 +136,91 @@ func (pws *PostgresWorkoutStore) getEntriesForWorkout(id int) ([]WorkoutEntry, e
 	entries := []WorkoutEntry{}
 	for rows.Next() {
 		var entry WorkoutEntry
-		if err := rows.Scan(); err != nil {
+		if err := rows.Scan(
+			&entry.ID,
+			&entry.ExerciseName,
+			&entry.Sets,
+			&entry.Reps,
+			&entry.DurationSeconds,
+			&entry.Weight,
+			&entry.Notes,
+			&entry.OrderIndex); err != nil {
 			return nil, err
 		}
 		entries = append(entries, entry)
 	}
 
 	return entries, nil
+}
+
+func (pws *PostgresWorkoutStore) Update(workout *Workout) error {
+	tx, err := pws.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	query := `
+	UPDATE workouts
+	SET title = $1, description = $2, duration_minutes = $3, calories_burned = $4
+	WHERE id = $5;
+	`
+	res, err := tx.Exec(query, workout.Title, workout.Description, workout.DurationMinutes, workout.CaloriesBurned, workout.ID)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("workout not found")
+	}
+
+	for _, entry := range workout.Entries {
+		query := `
+		UPDATE workout_entries
+		SET exercise_name = $1, sets = $2, reps = $3, duration_seconds = $4, weight = $5, notes = $6, order_index = $7
+		WHERE id = $8;
+		`
+		res, err := tx.Exec(query, entry.ExerciseName, entry.Sets, entry.Reps, entry.DurationSeconds, entry.Weight, entry.Notes, entry.OrderIndex, entry.ID)
+		if err != nil {
+			return err
+		}
+
+		rowsAffected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rowsAffected == 0 {
+			return fmt.Errorf("workout entry not found")
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (pws *PostgresWorkoutStore) Delete(id int) error {
+	query := `
+	DELETE FROM workouts WHERE id = $1;
+	`
+	res, err := pws.db.Exec(query, id)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("workout not found")
+	}
+
+	return nil
 }
